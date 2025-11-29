@@ -26,6 +26,7 @@ class CommandInterface:
         self.handicap = 0.0
         self.score_cutoff = float("inf")
         self.time_limit = 1
+        self.tt = {}  # transposition table
 
     # Convert a raw string to a command and a list of arguments
     def process_command(self, s):
@@ -139,20 +140,17 @@ class CommandInterface:
     def play(self, args):
         if not self.arg_check(args, "x y"):
             return False
-        
-        try:
-            x = int(args[0])
-            y = int(args[1])
-        except ValueError:
-            print("Illegal move: " + " ".join(args), file=sys.stderr)
-            return False
-        
+
+        # arg_check already converted args to numbers
+        x = int(args[0])
+        y = int(args[1])
+
         if not (0 <= x < self.width) or not (0 <= y < self.height) or self.board[y][x] != 0:
-            print("Illegal move: " + " ".join(args), file=sys.stderr)
+            print(f"Illegal move: {x} {y}", file=sys.stderr)
             return False
         
         if self.p1_score >= self.score_cutoff or self.p2_score >= self.score_cutoff:
-            print("Illegal move: " + " ".join(args), "game ended.", file=sys.stderr)
+            print(f"Illegal move: {x} {y} game ended.", file=sys.stderr)
             return False
         
         # put the piece onto the board
@@ -284,18 +282,30 @@ class CommandInterface:
         else:
             return p2_score - p1_score
 
-    # Internal search (negamax with alpha-beta and depth limit)
+    # Internal search (negamax with alpha-beta and depth limit, plus TT)
     def _negamax(self, depth, alpha, beta, start_time, time_budget):
         # Time check
         if time.time() - start_time > time_budget:
             raise TimeoutError
 
+        # Transposition table lookup
+        key = (self.to_play, tuple(tuple(row) for row in self.board))
+        if key in self.tt:
+            stored_depth, stored_value = self.tt[key]
+            # If we have a result from at least this depth, reuse it
+            if stored_depth >= depth:
+                return stored_value
+
         terminal_score = self.get_relative_score()
         if terminal_score is not None:
+            # Store exact terminal result
+            self.tt[key] = (depth, terminal_score)
             return terminal_score
 
         if depth == 0:
-            return self.evaluate()
+            value = self.evaluate()
+            self.tt[key] = (depth, value)
+            return value
 
         best_value = -float("inf")
         moves = self.get_moves()
@@ -306,13 +316,15 @@ class CommandInterface:
         moves.sort(key=lambda m: abs(m[0] - cx) + abs(m[1] - cy))
 
         for (x, y) in moves:
-            # Time check before each recursion
+            # Check time before exploring each move
             if time.time() - start_time > time_budget:
                 raise TimeoutError
 
             self.make_move(x, y)
-            value = -self._negamax(depth - 1, -beta, -alpha, start_time, time_budget)
-            self.undo_move(x, y)
+            try:
+                value = -self._negamax(depth - 1, -beta, -alpha, start_time, time_budget)
+            finally:
+                self.undo_move(x, y)
 
             if value > best_value:
                 best_value = value
@@ -321,12 +333,17 @@ class CommandInterface:
             if alpha >= beta:
                 break  # alpha-beta cutoff
 
+        # Store best_value for this node at this depth
+        self.tt[key] = (depth, best_value)
         return best_value
 
     # To implement for assignment 4.
     # Make sure you print a move within the specified time limit (1 second by default)
     # Print the x and y coordinates of your chosen move, space separated.
     def genmove(self, args):
+        # Clear transposition table for this move
+        self.tt.clear()
+
         # Get all legal moves
         moves = self.get_moves()
         if not moves:
