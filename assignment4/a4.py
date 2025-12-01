@@ -282,6 +282,41 @@ class CommandInterface:
         else:
             return p2_score - p1_score
 
+    # One-ply catastrophic threat detector (from opponent's point of view)
+    # Returns a set of moves (x, y) where opponent would gain a large score jump.
+    def find_threat_moves(self, threat_threshold=6):
+        threat_moves = set()
+        # Baseline scores
+        p1_base, p2_base = self.calculate_score()
+        opp = 2 if self.to_play == 1 else 1
+
+        best_delta = 0
+
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.board[y][x] != 0:
+                    continue
+                # Temporarily let opponent play here
+                self.board[y][x] = opp
+                p1_new, p2_new = self.calculate_score()
+                self.board[y][x] = 0
+
+                if opp == 1:
+                    delta_opp = p1_new - p1_base
+                else:
+                    delta_opp = p2_new - p2_base
+
+                if delta_opp > best_delta:
+                    best_delta = delta_opp
+                    threat_moves = {(x, y)}
+                elif delta_opp == best_delta and delta_opp > 0:
+                    threat_moves.add((x, y))
+
+        if best_delta >= threat_threshold:
+            return threat_moves
+        else:
+            return set()
+
     # Internal search (negamax with alpha-beta and depth limit, plus TT)
     def _negamax(self, depth, alpha, beta, start_time, time_budget):
         # Time check
@@ -363,13 +398,21 @@ class CommandInterface:
         # Leave a little safety margin (e.g., 90% of the timelimit)
         time_budget = max(0.01, self.time_limit * 0.9)
 
+        # Detect catastrophic opponent threats and prioritize blocking them
+        threat_moves = self.find_threat_moves(threat_threshold=6)
+
         best_move_so_far = moves[0]
         best_value_so_far = -float("inf")
 
-        # Order moves by distance to center (good heuristic for PoE2)
+        # Order moves by (threat priority, distance to center)
         cx = (self.width - 1) / 2.0
         cy = (self.height - 1) / 2.0
-        moves.sort(key=lambda m: abs(m[0] - cx) + abs(m[1] - cy))
+        moves.sort(
+            key=lambda m: (
+                (m not in threat_moves),  # threat moves first
+                abs(m[0] - cx) + abs(m[1] - cy)
+            )
+        )
 
         depth = 1
         try:
@@ -388,11 +431,13 @@ class CommandInterface:
 
                     self.make_move(x, y)
                     try:
-                        value = -self._negamax(depth - 1,
-                                               -float("inf"),
-                                               float("inf"),
-                                               start_time,
-                                               time_budget)
+                        value = -self._negamax(
+                            depth - 1,
+                            -float("inf"),
+                            float("inf"),
+                            start_time,
+                            time_budget,
+                        )
                     except TimeoutError:
                         self.undo_move(x, y)
                         raise
